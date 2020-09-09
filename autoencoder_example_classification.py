@@ -231,10 +231,32 @@ cp_callback = tf.keras.callbacks.ModelCheckpoint(checkpoint_path, save_weights_o
 
 if isTrain:
     # fitで学習を実行
-    model.fit((x_train, y_train_onehot), x_train, batch_size=200, epochs=2, validation_split=0.1, callbacks=[cp_callback])
+    history = model.fit((x_train, y_train_onehot), x_train, batch_size=200, epochs=5, validation_split=0.1, callbacks=[cp_callback])
 else:
     # 学習したパラメータの読み込み
     model.load_weights(checkpoint_path)
+#----------------------------
+
+#----------------------------
+# 損失のプロット
+acc = history.history['accuracy']
+val_acc = history.history['val_accuracy']
+loss = history.history['loss']
+val_loss = history.history['val_loss']
+epochs = np.arange(len(acc))
+
+plt.plot(epochs,acc,'bo-',label='training acc')
+plt.plot(epochs,val_acc,'b',label='validation acc')
+plt.title('Training and validation acc')
+plt.legend()
+
+plt.figure()
+plt.plot(epochs,loss,'bo-',label='training loss')
+plt.plot(epochs,val_loss,'b',label='validation loss')
+plt.title('Training and Validation loss')
+plt.legend()
+
+plt.show()
 #----------------------------
 
 #----------------------------
