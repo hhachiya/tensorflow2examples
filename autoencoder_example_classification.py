@@ -231,7 +231,8 @@ cp_callback = tf.keras.callbacks.ModelCheckpoint(checkpoint_path, save_weights_o
 
 if isTrain:
     # fitで学習を実行
-    history = model.fit((x_train, y_train_onehot), x_train, batch_size=200, epochs=5, validation_split=0.1, callbacks=[cp_callback])
+    history = model.fit((x_train, y_train_onehot), x_train, batch_size=200, epochs=1, validation_split=0.1, callbacks=[cp_callback])
+    pdb.set_trace()
 else:
     # 学習したパラメータの読み込み
     model.load_weights(checkpoint_path)
