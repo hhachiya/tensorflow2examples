@@ -1,5 +1,5 @@
 #############################
-# tensorflow2.2のauto-encoder（binary-classification）の実装例
+# tensorflow2.2のu-net（binary-classification）の実装例
 # Subclassing APIを用いる場合
 #############################
 import tensorflow as tf
@@ -11,11 +11,14 @@ import copy
 
 #----------------------------
 # 学習モード
-isTrain = False
+isTrain = True
 
 # データの作成
 # 画像サイズ（高さ，幅，チャネル数）
 H, W, C, O = 28, 28, 1, 2
+
+# CNNのベースチャネル数
+baseChn = 8
 
 # MNISTデータの読み込み
 (x_train, y_train), (x_test, y_test) = tf.keras.datasets.mnist.load_data()
@@ -47,42 +50,15 @@ y_test_onehot = np.eye(10)[y_test]
 
 # Layerクラスを継承して独自のconvolution用のレイヤークラスを作成
 class myConv(tf.keras.layers.Layer):
-    def __init__(self, chn=32, conv_kernel=(3,3), strides=(2,2), pool_kernel=(2,2), activation='relu', isBatchNorm=True, isPool=False):
+    def __init__(self, chn=32, conv_kernel=(3,3), strides=(2,2), activation='relu', isBatchNorm=True, padding='same'):
         super(myConv, self).__init__()
         self.activation = activation
         self.isBatchNorm = isBatchNorm
-        self.isPool = isPool
-
-        self.conv_relu = tf.keras.layers.Conv2D(filters=chn, strides=strides, padding='same', kernel_size=conv_kernel, activation='relu')
-        self.conv_sigmoid =  tf.keras.layers.Conv2D(filters=chn, strides=strides, padding='same', kernel_size=conv_kernel, activation='sigmoid')
+        self.conv_relu = tf.keras.layers.Conv2D(filters=chn, strides=strides, padding=padding, kernel_size=conv_kernel, activation='relu')
+        self.conv_sigmoid =  tf.keras.layers.Conv2D(filters=chn, strides=strides, padding=padding, kernel_size=conv_kernel, activation='sigmoid')
+        self.conv =  tf.keras.layers.Conv2D(filters=chn, strides=strides, padding=padding, kernel_size=conv_kernel)
         self.batchnorm = tf.keras.layers.BatchNormalization()
-        self.pool = tf.keras.layers.MaxPool2D(pool_kernel) 
-
-    def call(self, x):
-        if self.activation == 'relu':
-            x = self.conv_relu(x)
-        elif self.activation == 'sigmoid':
-            x = self.conv_sigmoid(x)
-
-        if self.isBatchNorm:
-            x = self.batchnorm(x)
-
-        if self.isPool:
-            x = self.pool(x)
-
-        return x
-
-# Layerクラスを継承して独自のdeconvolution用のレイヤークラスを作成
-class myDeconv(tf.keras.layers.Layer):
-    def __init__(self, chn=32, conv_kernel=(3,3), strides=(2,2), activation='relu', isBatchNorm=True):
-        super(myDeconv, self).__init__()
-        self.activation = activation
-        self.isBatchNorm = isBatchNorm
-
-        self.conv_relu = tf.keras.layers.Conv2DTranspose(filters=chn, strides=strides, padding='same', kernel_size=conv_kernel, activation='relu')
-        self.conv_sigmoid =  tf.keras.layers.Conv2DTranspose(filters=chn, strides=strides, padding='same', kernel_size=conv_kernel, activation='sigmoid')
-        self.conv =  tf.keras.layers.Conv2DTranspose(filters=chn, strides=strides, padding='same', kernel_size=conv_kernel)
-        self.batchnorm = tf.keras.layers.BatchNormalization()
+         
 
     def call(self, x):
         if self.activation == 'relu':
@@ -92,33 +68,10 @@ class myDeconv(tf.keras.layers.Layer):
         elif self.activation == 'softmax':
             x = self.conv(x)
             x = tf.keras.activations.softmax(x, axis=3)
-        elif self.activation == 'none':
-            x = self.conv(x)
 
         if self.isBatchNorm:
-            x = self.batchnorm(x)        
+            x = self.batchnorm(x)
 
-        return x
-
-# Layerクラスを継承して独自のFC用のレイヤークラスを作成
-class myFC(tf.keras.layers.Layer):
-    def __init__(self, chn=10, activation='relu', isFlat=False):
-        super(myFC, self).__init__()
-        self.activation = activation
-        self.isFlat = isFlat
-
-        self.flatten = tf.keras.layers.Flatten()
-        self.fc_relu = tf.keras.layers.Dense(units=chn, activation='relu')
-        self.fc_sigmoid = tf.keras.layers.Dense(units=chn, activation='sigmoid')
-
-    def call(self, x):
-        if self.isFlat:
-            x = self.flatten(x)
-
-        if self.activation == 'relu':
-            x = self.fc_relu(x)
-        elif self.activation == 'sigmoid':
-            x = self.fc_sigmoid(x)
         return x
 
 # Modelクラスを継承し，独自のlayerクラス（myConvとmyFC）を用いてネットワークを定義する
@@ -128,37 +81,76 @@ class myModel(tf.keras.Model):
         super(myModel, self).__init__()
         self.isEmbedLabel = isEmbedLabel
 
-        # conv, fc, defc & deconv layers
-        self.conv1 = myConv(chn=32, conv_kernel=(3,3), activation='relu')
-        self.conv2 = myConv(chn=64, conv_kernel=(3,3), activation='relu')
-        self.fc = myFC(chn=64, activation='relu', isFlat=True)
-        self.defc = myFC(chn=3136, activation='relu')
-        self.deconv1 = myDeconv(chn=64, conv_kernel=(3,3))
-        self.deconv2 = myDeconv(chn=32, conv_kernel=(3,3))
-        self.deconv3 = myDeconv(chn=2, conv_kernel=(3,3), strides=(1,1), activation='softmax', isBatchNorm=False)
-
-    def call(self, data):
-        (x,y) = data
+        # maxpool & upsample
+        self.maxpool = tf.keras.layers.MaxPool2D((2,2), padding='same')
+        self.upsample = tf.keras.layers.UpSampling2D((2,2), interpolation='nearest') 
 
         # encoder
-        conv1 = self.conv1(x)
-        conv2 = self.conv2(conv1)
-        z = self.fc(conv2)
-        
-        if self.isEmbedLabel:
-            # embeddingにone-hotラベルをconcat
-            zz = tf.concat([z,y], axis=1)
-        else:
-            zz = z     
+        self.conv1_1 = myConv(chn=baseChn, conv_kernel=(3,3), strides=(1,1), activation='relu', padding='same')
+        self.conv1_2 = myConv(chn=baseChn, conv_kernel=(3,3), strides=(1,1), activation='relu', padding='same')
+        self.conv2_1 = myConv(chn=baseChn*2, conv_kernel=(3,3), strides=(1,1), activation='relu', padding='same')
+        self.conv2_2 = myConv(chn=baseChn*2, conv_kernel=(3,3), strides=(1,1), activation='relu', padding='same')
+        self.conv3_1 = myConv(chn=baseChn*4, conv_kernel=(3,3), strides=(1,1), activation='relu', padding='same')
+        self.conv3_2 = myConv(chn=baseChn*4, conv_kernel=(3,3), strides=(1,1), activation='relu', padding='same')
+        self.conv4_1 = myConv(chn=baseChn*8, conv_kernel=(3,3), strides=(1,1), activation='relu', padding='same')
+        self.conv4_2 = myConv(chn=baseChn*8, conv_kernel=(3,3), strides=(1,1), activation='relu', padding='same')
 
         # decoder
-        defc = self.defc(zz)
-        defc_reshape = tf.reshape(defc,tf.shape(conv2))
-        deconv1 = self.deconv1(defc_reshape)
-        deconv2 = self.deconv2(deconv1)
-        output = self.deconv3(deconv2)
+        self.conv5_1 = myConv(chn=baseChn*4, conv_kernel=(3,3), strides=(1,1), activation='relu', padding='same')
+        self.conv5_2 = myConv(chn=baseChn*4, conv_kernel=(3,3), strides=(1,1), activation='relu', padding='same')
+        self.conv6_1 = myConv(chn=baseChn*2, conv_kernel=(3,3), strides=(1,1), activation='relu', padding='same')
+        self.conv6_2 = myConv(chn=baseChn*2, conv_kernel=(3,3), strides=(1,1), activation='relu', padding='same')                
+        self.conv7_1 = myConv(chn=baseChn, conv_kernel=(3,3), strides=(1,1), activation='relu', padding='same')
+        self.conv7_2 = myConv(chn=baseChn, conv_kernel=(3,3), strides=(1,1), activation='relu', padding='same')
+        self.conv7_3 = myConv(chn=2, conv_kernel=(3,3), strides=(1,1), activation='relu', padding='valid')
+        self.conv7_4 = myConv(chn=2, conv_kernel=(3,3), strides=(1,1), activation='softmax', padding='valid', isBatchNorm=False)
 
-        return output, (conv1,conv2,z,zz,defc,defc_reshape,deconv1,deconv2)
+    def call(self, data):
+        (x,label) = data
+
+        # encoder
+        conv1_0 = tf.keras.layers.ZeroPadding2D(padding=(2,2))(x)
+        conv1_1 = self.conv1_1(conv1_0)
+        conv1_2 = self.conv1_2(conv1_1)
+
+        conv2_0 = self.maxpool(conv1_2)
+        conv2_1 = self.conv2_1(conv2_0)
+        conv2_2 = self.conv2_2(conv2_1)
+
+        conv3_0 = self.maxpool(conv2_2)
+        conv3_1 = self.conv3_1(conv3_0)
+        conv3_2 = self.conv3_2(conv3_1)
+
+        conv4_0 = self.maxpool(conv3_2)
+        conv4_1 = self.conv4_1(conv4_0)
+        conv4_2 = self.conv4_2(conv4_1)
+
+        # embeddingにone-hotラベルをconcat
+        if self.isEmbedLabel:
+            shape = tf.shape(conv4_2)            
+            label_map = tf.tile(tf.expand_dims(tf.expand_dims(label,1),1),[1,shape[1],shape[2],1])
+            conv4_2=tf.concat([conv4_2,label_map],axis=3)
+
+        # decoder
+        conv5_0 = self.upsample(conv4_2)
+        conv5_0_concat = tf.concat([conv5_0,conv3_2],axis=-1)
+        conv5_1 = self.conv5_1(conv5_0_concat)
+        conv5_2 = self.conv5_2(conv5_1)
+
+        conv6_0 = self.upsample(conv5_2)              
+        conv6_0_concat = tf.concat([conv6_0,conv2_2],axis=-1)
+        conv6_1 = self.conv6_1(conv6_0_concat)
+        conv6_2 = self.conv6_2(conv6_1)
+
+        conv7_0 = self.upsample(conv6_2)              
+        conv7_0_concat = tf.concat([conv7_0,conv1_2],axis=-1)
+        conv7_1 = self.conv7_1(conv7_0_concat)
+        conv7_2 = self.conv7_2(conv7_1)
+        conv7_3 = self.conv7_3(conv7_2)
+
+        output = self.conv7_4(conv7_3)
+
+        return output, (conv1_2,conv2_2,conv3_2,conv4_2,conv5_2,conv6_2,conv7_2)
 
     # 学習
     def train_step(self,data):
