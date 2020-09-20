@@ -100,25 +100,44 @@ x_test = x_test.reshape(x_test.shape[0], nItem, H, W, C)
 #----------------------------
 # CS function to compute cross set matching scores
 class cross_set_score(tf.keras.layers.Layer):
-    def __init__(self,dim=20):
+    def __init__(self,dim=20, nHead=1):
         super(cross_set_score, self).__init__()
         self.dim = dim
-        self.linear = tf.keras.layers.Dense(self.dim,activation='relu',use_bias=False)
+        self.nHead = nHead
+
+        # multi-head linear function, l(x|W_0), l(x|W_1)...l(x|W_nHead) for each item feature vector x.
+        # one big linear function with weights of W_0, W_1, ..., W_nHead outputs dim*nHead-dim vector
+        self.linear = tf.keras.layers.Dense(units=self.dim*self.nHead,activation='relu',use_bias=False)
+
+        # linear function to combine multi-head score maps
+        self.conv = tf.keras.layers.Conv2D(filters=1, strides=(1,1), padding='same', kernel_size=(1,1))
 
     def call(self, x):
 
+        # linear transofrmation (B*nItem,dim*nHead)
         x = self.linear(x)
 
-        # 全アイテム特徴ペア間の内積
-        inner_prods = tf.matmul(x,tf.transpose(x))/tf.sqrt(tf.cast(self.dim,tf.float32))
-        inner_prods = tf.expand_dims(tf.expand_dims(inner_prods,0),-1)
+        # reshape (B*nItem,dim*nHead) to (nHead, B*nItem,dim)
+        x = tf.transpose(tf.reshape(x,[-1,self.nHead,self.dim]),[1,0,2])
 
-        # 集合（nItem行、nItem列）の中で内積の和を計算
+        # inner products between all pairs of items, outputing (nhead, nSet*nItem, nSet*nItem)-score map
+        inner_prods = tf.matmul(x,tf.transpose(x,[0,2,1]))/tf.sqrt(tf.cast(self.dim,tf.float32))
+
+        # reshape (nHead, nSet*nItem, nSet*nItem,1)
+        inner_prods = tf.expand_dims(inner_prods,-1)
+
+        # sum up score-map in each block of size (nItem, nItem) using conv2d with weights of ones
+        # outputing (nHead, nSet, nSet, 1)-score map
         scores = tf.keras.layers.Conv2D(filters=1,strides=(nItem,nItem),kernel_size=(nItem,nItem),
                     trainable=False,use_bias=False,weights=[tf.ones((nItem,nItem,1,1))])(inner_prods)
 
-        # 集合のアイテム数で割る（nItemに固定しているので要注意）
+        # devided by the two numbers of items of two sets（NOTE that nItem is SIMPLY fixed）
         scores = scores/nItem/nItem
+
+        # linearly combine multi-head score maps
+        # reshape (nHead, nSet, nSet, 1) to (1, nSet, nSet, nHead)
+        scores = tf.transpose(scores,[3,1,2,0])
+        scores = self.conv(scores)
 
         return scores[0,:,:,0]
 #----------------------------        
@@ -126,21 +145,21 @@ class cross_set_score(tf.keras.layers.Layer):
 #----------------------------
 # 全体のネットワーク
 class myModel(tf.keras.Model):
-    def __init__(self, self_head_size=20, self_num_heads=1):
+    def __init__(self, self_num_heads=2):
         super(myModel, self).__init__()
 
         # conv, fc, defc & deconv layers
         self.conv1 = tf.keras.layers.Conv2D(filters=baseChn, strides=(2,2), padding='same', kernel_size=(3,3), activation='relu')
         self.conv2 = tf.keras.layers.Conv2D(filters=baseChn*2, strides=(2,2), padding='same', kernel_size=(3,3), activation='relu')
-        self.conv3 = tf.keras.layers.Conv2D(filters=baseChn*3, strides=(2,2), padding='same', kernel_size=(3,3), activation='relu')
+        self.conv3 = tf.keras.layers.Conv2D(filters=baseChn*2, strides=(2,2), padding='same', kernel_size=(3,3), activation='relu')
         self.globalpool = tf.keras.layers.GlobalAveragePooling2D()
         self.cross_set_score = cross_set_score()
-        self.self_attention = tfa.layers.MultiHeadAttention(head_size=self_head_size,num_heads=self_num_heads)
+        self.self_attention = tfa.layers.MultiHeadAttention(head_size=baseChn*2,num_heads=self_num_heads)
         self.fc = tf.keras.layers.Dense(2,activation='softmax')
 
     def call(self, x):
 
-        # (B, nItem, H, W, C)を(B*nItem, H, W, C)に変形
+        # reshape (B, nItem, H, W, C) to (B*nItem, H, W, C)
         x = tf.reshape(x,[-1,H,W,C])
         
         # CNN
@@ -151,11 +170,11 @@ class myModel(tf.keras.Model):
         
         # encoder (self-attention)
         if isSelfAttention:
-            # (B*nItem, D)を(B, nItem, D)に変形
+            # reshape (B*nItem, D) to (B, nItem, D)
             x = tf.reshape(x,[-1,nItem,tf.shape(x)[1]])
             x = self.self_attention([x,x]) # [Queries, Values]
 
-            # (B, nItem, D)を(B*nItem, D)に変形
+            # reshape (B, nItem, D) to (B*nItem, D)
             x = tf.reshape(x,[-1,tf.shape(x)[2]])
 
         # decoder (cross-set transofrmation:cseft)            
@@ -179,11 +198,11 @@ class myModel(tf.keras.Model):
         # ラベルが一致する場合1、異なる場合0
         return 1-tf.abs(y_rows - y_cols)
 
-    def toBinaryLabel(self,y):
-        dNum = tf.shape(y)[0]
-        y = tf.map_fn(fn=lambda x:0 if tf.less(x,0.5) else 1, elems=tf.reshape(y,-1))
+    # def toBinaryLabel(self,y):
+    #     dNum = tf.shape(y)[0]
+    #     y = tf.map_fn(fn=lambda x:0 if tf.less(x,0.5) else 1, elems=tf.reshape(y,-1))
 
-        return tf.reshape(y,[dNum,-1])
+    #     return tf.reshape(y,[dNum,-1])
 
     # 学習
     def train_step(self,data):
@@ -260,7 +279,7 @@ cp_callback = tf.keras.callbacks.ModelCheckpoint(checkpoint_path, save_weights_o
 if isTrain:
 
     # fitで学習を実行
-    history = model.fit(x_train, y_train, batch_size=10, epochs=5, validation_split=0.2, callbacks=[cp_callback])
+    history = model.fit(x_train, y_train, batch_size=10, epochs=10, validation_split=0.2, callbacks=[cp_callback])
 
     # 損失のプロット
     acc = history.history['accuracy']
