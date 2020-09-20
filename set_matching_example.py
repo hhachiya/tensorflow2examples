@@ -125,14 +125,11 @@ class myModel(tf.keras.Model):
         return item_features
 
     def cross_set_label(self, y):
-
         y_rows = tf.tile(tf.expand_dims(y,-1),[1,tf.shape(y)[0]])
         y_cols = tf.tile(tf.transpose(tf.expand_dims(y,-1)),[tf.shape(y)[0],1])
         return 1-tf.abs(y_rows - y_cols)
 
     def cross_set_score(self, x):
-        #dim = tf.cast(tf.shape(x)[1],tf.float32)
-        #pdb.set_trace()
         x = x/tf.linalg.norm(x,axis=1,keepdims=1)
         inner_prods = tf.matmul(x,tf.transpose(x))
         inner_prods = tf.expand_dims(tf.expand_dims(inner_prods,0),-1)
