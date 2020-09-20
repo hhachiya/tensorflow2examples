@@ -121,8 +121,7 @@ class myFC(tf.keras.layers.Layer):
             x = self.fc_sigmoid(x)
         return x
 
-# Modelクラスを継承し，独自のlayerクラス（myConvとmyFC）を用いてネットワークを定義する
-# 独自のモデルクラスを作成
+# Modelクラスを継承し，独自のネットワークを定義する
 class myModel(tf.keras.Model):
     def __init__(self,isEmbedLabel=True):
         super(myModel, self).__init__()

@@ -3,6 +3,7 @@
 # Subclassing APIを用いる場合
 #############################
 import tensorflow as tf
+import tensorflow_addons as tfa
 import matplotlib.pylab as plt
 import os
 import numpy as np
@@ -13,6 +14,8 @@ import pickle
 #----------------------------
 # パラメータの作成
 isTrain = True
+
+isSelfAttention = True
 
 # ベースチャネル数
 baseChn = 32
@@ -95,49 +98,86 @@ x_test = x_test.reshape(x_test.shape[0], nItem, H, W, C)
 #----------------------------
 
 #----------------------------
-# Subclassingを用いたネットワークの定義
+# CS function to compute cross set matching scores
+class cross_set_score(tf.keras.layers.Layer):
+    def __init__(self,dim=20):
+        super(cross_set_score, self).__init__()
+        self.dim = dim
+        self.linear = tf.keras.layers.Dense(self.dim,activation='relu',use_bias=False)
 
-# Modelクラスを継承し，独自のlayerクラス（myConvとmyFC）を用いてネットワークを定義
+    def call(self, x):
+
+        x = self.linear(x)
+
+        # 全アイテム特徴ペア間の内積
+        inner_prods = tf.matmul(x,tf.transpose(x))/tf.sqrt(tf.cast(self.dim,tf.float32))
+        inner_prods = tf.expand_dims(tf.expand_dims(inner_prods,0),-1)
+
+        # 集合（nItem行、nItem列）の中で内積の和を計算
+        scores = tf.keras.layers.Conv2D(filters=1,strides=(nItem,nItem),kernel_size=(nItem,nItem),
+                    trainable=False,use_bias=False,weights=[tf.ones((nItem,nItem,1,1))])(inner_prods)
+
+        # 集合のアイテム数で割る（nItemに固定しているので要注意）
+        scores = scores/nItem/nItem
+
+        return scores[0,:,:,0]
+#----------------------------        
+
+#----------------------------
+# 全体のネットワーク
 class myModel(tf.keras.Model):
-    def __init__(self):
+    def __init__(self, self_head_size=20, self_num_heads=1):
         super(myModel, self).__init__()
 
         # conv, fc, defc & deconv layers
         self.conv1 = tf.keras.layers.Conv2D(filters=baseChn, strides=(2,2), padding='same', kernel_size=(3,3), activation='relu')
         self.conv2 = tf.keras.layers.Conv2D(filters=baseChn*2, strides=(2,2), padding='same', kernel_size=(3,3), activation='relu')
         self.conv3 = tf.keras.layers.Conv2D(filters=baseChn*3, strides=(2,2), padding='same', kernel_size=(3,3), activation='relu')
-        self.fc1 = tf.keras.layers.Dense(20,activation='sigmoid',use_bias=False)
         self.globalpool = tf.keras.layers.GlobalAveragePooling2D()
+        self.cross_set_score = cross_set_score()
+        self.self_attention = tfa.layers.MultiHeadAttention(head_size=self_head_size,num_heads=self_num_heads)
+        self.fc = tf.keras.layers.Dense(2,activation='softmax')
 
     def call(self, x):
 
         # (B, nItem, H, W, C)を(B*nItem, H, W, C)に変形
         x = tf.reshape(x,[-1,H,W,C])
-
+        
         # CNN
         x = self.conv1(x)
         x = self.conv2(x)
         x = self.conv3(x)
         x = self.globalpool(x)
+        
+        # encoder (self-attention)
+        if isSelfAttention:
+            # (B*nItem, D)を(B, nItem, D)に変形
+            x = tf.reshape(x,[-1,nItem,tf.shape(x)[1]])
+            x = self.self_attention([x,x]) # [Queries, Values]
 
-        item_features = self.fc1(x)
+            # (B, nItem, D)を(B*nItem, D)に変形
+            x = tf.reshape(x,[-1,tf.shape(x)[2]])
+
+        # decoder (cross-set transofrmation:cseft)            
+
+        # cross set matching score
+        score = self.cross_set_score(x)
+
+        # classificaiton
+        output = self.fc(tf.reshape(score,[-1,1]))
    
-        return item_features
+        return output, score
 
+    # 星取表（ラベルyが一致する場合1、異なる場合0）を作成
     def cross_set_label(self, y):
+        # 星取表の行
         y_rows = tf.tile(tf.expand_dims(y,-1),[1,tf.shape(y)[0]])
+
+        # 星取表の列        
         y_cols = tf.tile(tf.transpose(tf.expand_dims(y,-1)),[tf.shape(y)[0],1])
+
+        # ラベルが一致する場合1、異なる場合0
         return 1-tf.abs(y_rows - y_cols)
-
-    def cross_set_score(self, x):
-        x = x/tf.linalg.norm(x,axis=1,keepdims=1)
-        inner_prods = tf.matmul(x,tf.transpose(x))
-        inner_prods = tf.expand_dims(tf.expand_dims(inner_prods,0),-1)
-        scores = tf.keras.layers.Conv2D(filters=1,strides=(nItem,nItem),kernel_size=(nItem,nItem),
-                trainable=False,use_bias=False,weights=[tf.ones((nItem,nItem,1,1))])(inner_prods)
-        scores = scores/nItem/nItem
-
-        return scores[0,:,:,0]
 
     def toBinaryLabel(self,y):
         dNum = tf.shape(y)[0]
@@ -152,13 +192,11 @@ class myModel(tf.keras.Model):
         with tf.GradientTape() as tape:
             
             # 予測
-            item_features = self(x, training=True)
-
-            # クロスセットスコアに変換
-            y_pred = self.cross_set_score(item_features)
+            y_pred, _ = self(x, training=True)
 
             # クロスマッチラベルに変換
             y_true = self.cross_set_label(y_true)
+            y_true = tf.reshape(y_true,-1)
 
             # 損失
             loss = self.compiled_loss(y_true, y_pred, regularization_losses=self.losses)
@@ -167,9 +205,6 @@ class myModel(tf.keras.Model):
         trainable_vars = self.trainable_variables
         gradients = tape.gradient(loss, trainable_vars)
         self.optimizer.apply_gradients(zip(gradients, trainable_vars))
-
-        # バイナリに変換
-        y_pred = self.toBinaryLabel(y_pred)
 
         # 評価値の更新
         self.compiled_metrics.update_state(y_true, y_pred)
@@ -182,19 +217,14 @@ class myModel(tf.keras.Model):
         x, y_true = data
         
         # 予測
-        item_features = self(x, training=False)
-
-        # クロスセットスコアに変換
-        y_pred = self.cross_set_score(item_features)
+        y_pred, _ = self(x, training=False)
 
         # クロスマッチラベルに変換
         y_true = self.cross_set_label(y_true)
+        y_true = tf.reshape(y_true,-1)
 
         # 損失
         self.compiled_loss(y_true, y_pred, regularization_losses=self.losses)
-
-        # バイナリに変換
-        y_pred = self.toBinaryLabel(y_pred)
 
         # metricsの更新
         self.compiled_metrics.update_state(y_true, y_pred)
@@ -207,11 +237,7 @@ class myModel(tf.keras.Model):
         x = data
 
         # 予測
-        item_features = self(x, training=False)
-
-        # クロスセットスコアに変換
-        y_pred = self.cross_set_score(item_features)
-
+        y_pred, _ = self(x, training=False)
 
         # 予測
         return y_pred
@@ -220,7 +246,7 @@ class myModel(tf.keras.Model):
 model = myModel()
 
 # 学習方法の設定
-model.compile(optimizer='adam',loss='binary_crossentropy',metrics=['accuracy'],run_eagerly=True)
+model.compile(optimizer='adam',loss='sparse_categorical_crossentropy',metrics=['accuracy'],run_eagerly=True)
 #----------------------------
 
 #----------------------------
@@ -273,5 +299,7 @@ test_loss, test_acc = model.evaluate(x_test, y_test, verbose=0)
 print('Test data loss:', test_loss)
 print('Test data accuracy:', test_acc)
 #----------------------------
+
+y_pred,score=model(x_train[:4])
 
 pdb.set_trace()
