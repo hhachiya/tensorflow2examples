@@ -159,10 +159,10 @@ class cross_set_score(tf.keras.layers.Layer):
 
         # multi-head linear function, l(x|W_0), l(x|W_1)...l(x|W_num_heads) for each item feature vector x.
         # one big linear function with weights of W_0, W_1, ..., W_num_heads outputs head_size*num_heads-dim vector
-        self.linear = tf.keras.layers.Dense(units=self.head_size*self.num_heads,activation='relu',use_bias=False)
+        self.linear = tf.keras.layers.Dense(units=self.head_size*self.num_heads,kernel_constraint=tf.keras.constraints.NonNeg(),use_bias=False)
 
         # linear function to combine multi-head score maps
-        self.conv = tf.keras.layers.Conv2D(filters=1, strides=(1,1), padding='same', kernel_size=(1,1))
+        self.conv = tf.keras.layers.Conv2D(filters=1, strides=(1,1), padding='same', kernel_size=(1,1),use_bias=False)
 
     def call(self, x):
         nSet = tf.shape(x)[1]
@@ -203,12 +203,15 @@ class cseft(tf.keras.layers.Layer):
 
         # multi-head linear function, l(x|W_0), l(x|W_1)...l(x|W_num_heads) for each item feature vector x.
         # one big linear function with weights of W_0, W_1, ..., W_num_heads outputs head_size*num_heads-dim vector
-        self.linear1 = tf.keras.layers.Dense(units=self.head_size*self.num_heads,activation='relu',use_bias=False)
-        self.linear2 = tf.keras.layers.Dense(units=self.head_size*self.num_heads,activation='relu',use_bias=False)
-        self.linear3 = tf.keras.layers.Dense(units=self.head_size*self.num_heads,activation='relu',use_bias=False)
+        # self.linear1 = tf.keras.layers.Dense(units=self.head_size*self.num_heads,activation='relu',use_bias=False)
+        # self.linear2 = tf.keras.layers.Dense(units=self.head_size*self.num_heads,activation='relu',use_bias=False)
+        # self.linear3 = tf.keras.layers.Dense(units=self.head_size*self.num_heads,activation='relu',use_bias=False)
+        self.linear1 = tf.keras.layers.Dense(units=self.head_size*self.num_heads,kernel_constraint=tf.keras.constraints.NonNeg(), use_bias=False)
+        self.linear2 = tf.keras.layers.Dense(units=self.head_size*self.num_heads,kernel_constraint=tf.keras.constraints.NonNeg(), use_bias=False)
+        self.linear3 = tf.keras.layers.Dense(units=self.head_size*self.num_heads,use_bias=False)
 
         # linear function to combine multi-head score maps
-        self.conv = tf.keras.layers.Conv2D(filters=1, strides=(1,1), padding='same', kernel_size=(1,1))
+        self.conv = tf.keras.layers.Conv2D(filters=1, strides=(1,1), padding='same', kernel_size=(1,1),use_bias=False)
 
     def call(self, x, y):
         # number of sets
