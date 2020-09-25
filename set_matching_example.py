@@ -395,13 +395,11 @@ if isTrain:
         # # execute pretraining
         history = model.fit(x_train, y_train, batch_size=batch_size, epochs=1, validation_split=0.2, callbacks=[cp_callback])
 
-        pdb.set_trace()
         model.isPretrain = False
 
     # execute training
     history = model.fit(x_train, y_train, batch_size=batch_size, epochs=epochs, validation_split=0.2, callbacks=[cp_callback])
     #history = model.fit(x_train, y_train, batch_size=batch_size, epochs=1, validation_split=0.2, callbacks=[cp_callback])
-    pdb.set_trace()
 
     # plot loss and accuracy
     acc = history.history['accuracy']
