@@ -16,8 +16,9 @@ import pickle
 isTrain = True
 
 # flag of self-attention and cseft
-isSelfAttention = True
+isSelfAttention = False
 isCseft = True
+isPretrain = True
 
 # base channel numbers of CNN layer
 baseChn = 32
@@ -105,51 +106,6 @@ x_train = x_train.reshape(x_train.shape[0], nItem, H, W, C)
 x_test = x_test.reshape(x_test.shape[0], nItem, H, W, C)
 #----------------------------
 
-# #----------------------------
-# # multi-head CS function to make cros-set matching score map
-# class cross_set_score_old(tf.keras.layers.Layer):
-#     def __init__(self, head_size=20, num_heads=2):
-#         super(cross_set_score_old, self).__init__()
-#         self.head_size = head_size
-#         self.num_heads = num_heads
-
-#         # multi-head linear function, l(x|W_0), l(x|W_1)...l(x|W_num_heads) for each item feature vector x.
-#         # one big linear function with weights of W_0, W_1, ..., W_num_heads outputs head_size*num_heads-dim vector
-#         self.linear = tf.keras.layers.Dense(units=self.head_size*self.num_heads,activation='relu',use_bias=False)
-
-#         # linear function to combine multi-head score maps
-#         self.conv = tf.keras.layers.Conv2D(filters=1, strides=(1,1), padding='same', kernel_size=(1,1))
-
-#     def call(self, x):
-
-#         # linear transofrmation (nSet*nItem,head_size*num_heads)
-#         x = self.linear(x)
-
-#         # reshape (nSet*nItem,head_size*num_heads) to (num_heads, nSet*nItem,head_size)
-#         x = tf.transpose(tf.reshape(x,[-1,self.num_heads,self.head_size]),[1,0,2])
-
-#         # inner products between all pairs of items, outputing (num_heads, nSet*nItem, nSet*nItem)-score map
-#         xx = tf.matmul(x,tf.transpose(x,[0,2,1]))/tf.sqrt(tf.cast(self.head_size,tf.float32))
-
-#         # reshape (num_heads, nSet*nItem, nSet*nItem,1)
-#         xx = tf.expand_dims(xx,-1)
-
-#         # sum up score-map in each block of size (nItem, nItem) using conv2d with weights of ones
-#         # outputing (num_heads, nSet, nSet, 1)-score map
-#         scores = tf.keras.layers.Conv2D(filters=1,strides=(nItem,nItem),kernel_size=(nItem,nItem),
-#                     trainable=False,use_bias=False,weights=[tf.ones((nItem,nItem,1,1))])(xx)
-
-#         # devided by the two numbers of items of two sets（NOTE that nItem is SIMPLY fixed）
-#         scores = scores/nItem/nItem
-
-#         # linearly combine multi-head score maps
-#         # reshape (num_heads, nSet, nSet, 1) to (1, nSet, nSet, num_heads)
-#         scores = tf.transpose(scores,[3,1,2,0])
-#         scores = self.conv(scores)
-
-#         return scores[0,:,:,0]
-# #----------------------------
-
 #----------------------------
 # multi-head CS function to make cros-set matching score map
 class cross_set_score(tf.keras.layers.Layer):
@@ -173,18 +129,21 @@ class cross_set_score(tf.keras.layers.Layer):
         # linear transofrmation from (nSet*nItem, nSet, Xdim) to (nSet*nItem, nSet, head_size*num_heads)
         x = self.linear(x)
 
-        # reshape (nSet*nItem,head_size*num_heads) to (num_heads, nSet*nItem,head_size)
+        # reshape (nSet*nItem, nSet, head_size*num_heads) to (num_heads, nSet*nItem, nSet, head_size)
         x = tf.transpose(tf.reshape(tf.expand_dims(x,2),[nSet*nItem, nSet, self.num_heads, self.head_size]),[2,0,1,3])        
 
         # compute inner products between all pairs of items with cross-set feature (cseft)
         # Between set #1 and set #2, cseft x[:,0:2,1] and x[:,2:4,0] are extracted to compute inner product when nItem=2
         # More generally, between set #i and set #j, cseft x[:,j*2:j*2+2,i] and x[:,i*2:i*2+2,j] are extracted.
         # Outputing (nSet, nSet, num_heads)-score map
-        scores = tf.stack([[tf.reduce_sum(tf.reduce_sum(tf.matmul(x[:,j*nItem:j*nItem+nItem,i],tf.transpose(x[:,i*nItem:i*nItem+nItem,j],[0,2,1]))/sqrt_head_size,axis=1),axis=1)
-                         for i in range(nSet)] for j in range(nSet)])
-
-        # non-negative using Relu
-        scores = tf.keras.layers.ReLU()(scores)                         
+        scores = tf.stack(
+            [[
+                tf.reduce_sum(tf.reduce_sum(
+                tf.keras.layers.ReLU()
+                    (tf.matmul(x[:,j*nItem:j*nItem+nItem,i],tf.transpose(x[:,i*nItem:i*nItem+nItem,j],[0,2,1]))/sqrt_head_size)
+                ,axis=1),axis=1)
+                for i in range(nSet)] for j in range(nSet)]
+             )
 
         # devided by the two numbers of items of two sets（NOTE that nItem is SIMPLY fixed）
         scores = scores/nItem/nItem
@@ -265,10 +224,11 @@ class cseft(tf.keras.layers.Layer):
 #----------------------------
 # design network architecture
 class myModel(tf.keras.Model):
-    def __init__(self, isSelfAttention=True, isCseft=True, num_heads=2):
+    def __init__(self, isPretrain=True, isSelfAttention=True, isCseft=True, num_heads=2):
         super(myModel, self).__init__()
         self.isSelfAttention = isSelfAttention
         self.isCseft = isCseft
+        self.isPretrain = isPretrain
 
         # conv, fc, defc & deconv layers
         self.conv1 = tf.keras.layers.Conv2D(filters=baseChn, strides=(2,2), padding='same', kernel_size=(3,3), activation='relu')
@@ -276,9 +236,11 @@ class myModel(tf.keras.Model):
         self.conv3 = tf.keras.layers.Conv2D(filters=baseChn*2, strides=(2,2), padding='same', kernel_size=(3,3), activation='relu')
         self.globalpool = tf.keras.layers.GlobalAveragePooling2D()
         self.cross_set_score = cross_set_score(head_size=baseChn*2,num_heads=num_heads)
-        self.self_attention = tfa.layers.MultiHeadAttention(head_size=baseChn*2,num_heads=num_heads)
-        self.cseft = cseft(head_size=baseChn*2,num_heads=num_heads)
-        self.fc = tf.keras.layers.Dense(2,activation='softmax')
+        self.self_attention = tfa.layers.MultiHeadAttention(head_size=baseChn,num_heads=num_heads)
+        self.cseft = cseft(head_size=baseChn,num_heads=num_heads)
+        self.fc1 = tf.keras.layers.Dense(2,activation='softmax')
+        self.fc2 = tf.keras.layers.Dense(baseChn,activation='softmax')
+        self.fc3 = tf.keras.layers.Dense(2,activation='softmax')
 
     def call(self, x):
 
@@ -294,6 +256,9 @@ class myModel(tf.keras.Model):
         x = self.conv3(x)
         x = self.globalpool(x)
         debug.append(x)
+
+        # classificaiton of set
+        output1 = self.fc1(tf.reshape(x,[nSet,-1]))
 
         # Attention
         if self.isSelfAttention:
@@ -319,10 +284,11 @@ class myModel(tf.keras.Model):
         score = self.cross_set_score(x)
         debug.append(score)
 
-        # classificaiton
-        output = self.fc(tf.reshape(score,[-1,1]))
+        # classificaiton of set matching
+        fc2 = self.fc2(tf.reshape(score,[-1,1]))
+        output2 = self.fc3(fc2)
 
-        return output, debug
+        return output1, output2, debug
 
     # convert class labels to cross-set label（if the class-labels are same, 1, otherwise 0)
     def cross_set_label(self, y):
@@ -348,11 +314,16 @@ class myModel(tf.keras.Model):
         with tf.GradientTape() as tape:
             
             # predict
-            y_pred, deb = self(x, training=True)
+            y_pred1, y_pred2, deb = self(x, training=True)
 
-            # convert to cross-set label
-            y_true = self.cross_set_label(y_true)
-            y_true = tf.reshape(y_true,-1)
+            if self.isPretrain:
+                y_pred = y_pred1
+            else:
+                y_pred = y_pred2
+
+                # convert to cross-set label
+                y_true = self.cross_set_label(y_true)
+                y_true = tf.reshape(y_true,-1)
 
             # loss
             loss = self.compiled_loss(y_true, y_pred, regularization_losses=self.losses)
@@ -360,7 +331,6 @@ class myModel(tf.keras.Model):
         # train using gradients
         trainable_vars = self.trainable_variables
         gradients = tape.gradient(loss, trainable_vars)
-        #pdb.set_trace()
 
         self.optimizer.apply_gradients(zip(gradients, trainable_vars))
 
@@ -375,11 +345,16 @@ class myModel(tf.keras.Model):
         x, y_true = data
         
         # predict
-        y_pred, _ = self(x, training=False)
+        y_pred1, y_pred2, _ = self(x, training=False)
 
-        # convert to cross-set label
-        y_true = self.cross_set_label(y_true)
-        y_true = tf.reshape(y_true,-1)
+        if self.isPretrain:
+            y_pred = y_pred1
+        else:
+            y_pred = y_pred2
+
+            # convert to cross-set label
+            y_true = self.cross_set_label(y_true)
+            y_true = tf.reshape(y_true,-1)
 
         # loss
         self.compiled_loss(y_true, y_pred, regularization_losses=self.losses)
@@ -395,12 +370,12 @@ class myModel(tf.keras.Model):
         x = data
 
         # predict
-        y_pred, _ = self(x, training=False)
+        y_pred1, y_pred2, _ = self(x, training=False)
 
-        return y_pred
+        return y_pred1, y_pred2
 
 # setting model
-model = myModel(isSelfAttention=isSelfAttention, isCseft=isCseft)
+model = myModel(isPretrain=isPretrain, isSelfAttention=isSelfAttention, isCseft=isCseft)
 
 # setting training, loss, metric to model
 model.compile(optimizer='adam',loss='sparse_categorical_crossentropy',metrics=['accuracy'],run_eagerly=True)
@@ -413,11 +388,19 @@ checkpoint_path = "setmatching_training/cp.ckpt"
 checkpoint_dir = os.path.dirname(checkpoint_path)
 cp_callback = tf.keras.callbacks.ModelCheckpoint(checkpoint_path, save_weights_only=True, verbose=1)
 
-
 if isTrain:
+
+    if model.isPretrain:
+        # # execute pretraining
+        history = model.fit(x_train, y_train, batch_size=batch_size, epochs=1, validation_split=0.2, callbacks=[cp_callback])
+
+        pdb.set_trace()
+        model.isPretrain = False
 
     # execute training
     history = model.fit(x_train, y_train, batch_size=batch_size, epochs=epochs, validation_split=0.2, callbacks=[cp_callback])
+    #history = model.fit(x_train, y_train, batch_size=batch_size, epochs=1, validation_split=0.2, callbacks=[cp_callback])
+    pdb.set_trace()
 
     # plot loss and accuracy
     acc = history.history['accuracy']
@@ -443,12 +426,12 @@ else:
     model.load_weights(checkpoint_path)
 #----------------------------
 
-#----------------------------
-# evaluation with training data
-train_loss, train_acc = model.evaluate(x_train[:1000], y_train[:1000], verbose=0)
-print('Train data loss:', train_loss)
-print('Train data accuracy:', train_acc)
-#----------------------------
+# #----------------------------
+# # evaluation with training data
+# train_loss, train_acc = model.evaluate(x_train[:1000], y_train[:1000], verbose=0)
+# print('Train data loss:', train_loss)
+# print('Train data accuracy:', train_acc)
+# #----------------------------
 
 #----------------------------
 # evaluation with validation data
