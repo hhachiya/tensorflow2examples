@@ -194,10 +194,10 @@ class cseft(tf.keras.layers.Layer):
         # inner products between all pairs of items, outputing (num_heads, nSet*nItem, nSet*nItem)-score map        
         xy1 = tf.matmul(x,tf.transpose(y1,[0,2,1]))/sqrt_head_size
 
-        if self.activation:
+        if self.activation=='softmax':
             # normalized by softmax
             xy1 = tf.nn.softmax(xy1,axis=-1)
-        else:
+        elif self.activation=='relu':
             # non-negative using Relu
             xy1 = tf.keras.layers.ReLU()(xy1)
 
