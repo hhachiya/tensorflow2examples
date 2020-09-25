@@ -10,15 +10,16 @@ import numpy as np
 import pdb
 import copy
 import pickle
+import sys
 
 #----------------------------
 # set parameters
 isTrain = True
 
 # flag of self-attention and cseft
-isSelfAttention = False
-isCseft = True
-isPretrain = True
+isPretrain = int(sys.argv[1])
+isSelfAttention = int(sys.argv[2])
+isCseft = int(sys.argv[3])
 
 # base channel numbers of CNN layer
 baseChn = 32
