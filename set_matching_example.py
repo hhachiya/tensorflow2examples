@@ -160,10 +160,12 @@ class cross_set_score(tf.keras.layers.Layer):
 #----------------------------
 # cross-set feature (cseft)
 class cseft(tf.keras.layers.Layer):
-    def __init__(self, head_size=20, num_heads=2):
+    def __init__(self, head_size=20, num_heads=2, activation="relu", self_attention=False):
         super(cseft, self).__init__()
         self.head_size = head_size
         self.num_heads = num_heads        
+        self.activation = activation
+        self.self_attention = self_attention
 
         # multi-head linear function, l(x|W_0), l(x|W_1)...l(x|W_num_heads) for each item feature vector x.
         # one big linear function with weights of W_0, W_1, ..., W_num_heads outputs head_size*num_heads-dim vector
@@ -192,8 +194,12 @@ class cseft(tf.keras.layers.Layer):
         # inner products between all pairs of items, outputing (num_heads, nSet*nItem, nSet*nItem)-score map        
         xy1 = tf.matmul(x,tf.transpose(y1,[0,2,1]))/sqrt_head_size
 
-        # non-negative using Relu
-        xy1 = tf.keras.layers.ReLU()(xy1)
+        if self.activation:
+            # normalized by softmax
+            xy1 = tf.nn.softmax(xy1,axis=-1)
+        else:
+            # non-negative using Relu
+            xy1 = tf.keras.layers.ReLU()(xy1)
 
         # block diagonal matrix containing the block (num_heads, nItem, head_size) of y2 in diagonal elements
         # outputs (num_heads, nSet*nItem, nSet*head_size)
@@ -216,8 +222,12 @@ class cseft(tf.keras.layers.Layer):
         # reshape (1, nSet*nItem, nSet*head_size, 1) to (nSet*nItem, nSet*head_size)
         newx = newx[0,:,:,0]
 
-        # reshape (nSet*nItem, nSet*head_size) to (nSet*nItem, nSet, head_size)
-        newx = tf.reshape(tf.expand_dims(newx,1),[-1,nSet,self.head_size])
+        if self.self_attention:
+            # extract only diagonal block (nItem, head_size), outputing (nSet*nItem, head_size)
+            newx = tf.concat([newx[i*nItem:(i+1)*nItem,i*self.head_size:(i+1)*self.head_size] for i in range(nSet)],axis=0) 
+        else:
+            # reshape (nSet*nItem, nSet*head_size) to (nSet*nItem, nSet, head_size)
+            newx = tf.reshape(tf.expand_dims(newx,1),[-1,nSet,self.head_size])
 
         return newx
 #----------------------------        
@@ -236,12 +246,12 @@ class myModel(tf.keras.Model):
         self.conv2 = tf.keras.layers.Conv2D(filters=baseChn*2, strides=(2,2), padding='same', kernel_size=(3,3), activation='relu')
         self.conv3 = tf.keras.layers.Conv2D(filters=baseChn*2, strides=(2,2), padding='same', kernel_size=(3,3), activation='relu')
         self.globalpool = tf.keras.layers.GlobalAveragePooling2D()
-        self.cross_set_score = cross_set_score(head_size=baseChn*2,num_heads=num_heads)
-        self.self_attention = tfa.layers.MultiHeadAttention(head_size=baseChn,num_heads=num_heads)
-        self.cseft = cseft(head_size=baseChn,num_heads=num_heads)
-        self.fc1 = tf.keras.layers.Dense(2,activation='softmax')
-        self.fc2 = tf.keras.layers.Dense(baseChn,activation='softmax')
-        self.fc3 = tf.keras.layers.Dense(2,activation='softmax')
+        self.cross_set_score = cross_set_score(head_size=baseChn*2, num_heads=num_heads)
+        self.self_attention = cseft(head_size=baseChn, num_heads=num_heads, activation="softmax", self_attention=True)
+        self.cseft = cseft(head_size=baseChn, num_heads=num_heads)
+        self.fc1 = tf.keras.layers.Dense(2, activation='softmax')
+        self.fc2 = tf.keras.layers.Dense(baseChn, activation='softmax')
+        self.fc3 = tf.keras.layers.Dense(2, activation='softmax')
 
     def call(self, x):
 
@@ -263,15 +273,8 @@ class myModel(tf.keras.Model):
 
         # Attention
         if self.isSelfAttention:
-            # encoder (self-set attention)
-            # reshape (nSet*nItem, D) to (nSet, nItem, D)
-            x = tf.reshape(x,[-1,nItem,tf.shape(x)[1]])
-
             # input: (nSet, nItem, D), output:(nSet, nItem, D)
-            x = self.self_attention([x,x]) # [Queries, Values]
-
-            # reshape (nSet, nItem, D) to (nSet*nItem, D)
-            x = tf.reshape(x,[-1,tf.shape(x)[2]])
+            x = self.self_attention(x,x)
             debug.append(x)
 
         if self.isCseft:
