@@ -107,6 +107,56 @@ x_train = x_train.reshape(x_train.shape[0], nItem, H, W, C)
 x_test = x_test.reshape(x_test.shape[0], nItem, H, W, C)
 #----------------------------
 
+# #----------------------------
+# # multi-head CS function to make cros-set matching score map
+# class cross_set_score_old(tf.keras.layers.Layer):
+#     def __init__(self, head_size=20, num_heads=2):
+#         super(cross_set_score_old, self).__init__()
+#         self.head_size = head_size
+#         self.num_heads = num_heads
+
+#         # multi-head linear function, l(x|W_0), l(x|W_1)...l(x|W_num_heads) for each item feature vector x.
+#         # one big linear function with weights of W_0, W_1, ..., W_num_heads outputs head_size*num_heads-dim vector
+#         #self.linear = tf.keras.layers.Dense(units=self.head_size*self.num_heads,kernel_constraint=tf.keras.constraints.NonNeg(),use_bias=False)
+#         self.linear = tf.keras.layers.Dense(units=self.head_size*self.num_heads,use_bias=False)
+
+#         # linear function to combine multi-head score maps
+#         self.conv = tf.keras.layers.Conv2D(filters=1, strides=(1,1), padding='same', kernel_size=(1,1),use_bias=False)
+
+#     def call(self, x):
+#         nSet = tf.shape(x)[1]
+#         sqrt_head_size = tf.sqrt(tf.cast(self.head_size,tf.float32))
+
+#         # linear transofrmation from (nSet*nItem, nSet, Xdim) to (nSet*nItem, nSet, head_size*num_heads)
+#         x = self.linear(x)
+
+#         # reshape (nSet*nItem, nSet, head_size*num_heads) to (num_heads, nSet*nItem, nSet, head_size)
+#         x = tf.transpose(tf.reshape(tf.expand_dims(x,2),[nSet*nItem, nSet, self.num_heads, self.head_size]),[2,0,1,3])        
+
+#         # compute inner products between all pairs of items with cross-set feature (cseft)
+#         # Between set #1 and set #2, cseft x[:,0:2,1] and x[:,2:4,0] are extracted to compute inner product when nItem=2
+#         # More generally, between set #i and set #j, cseft x[:,j*2:j*2+2,i] and x[:,i*2:i*2+2,j] are extracted.
+#         # Outputing (nSet, nSet, num_heads)-score map
+#         scores = tf.stack(
+#             [[
+#                 tf.reduce_sum(tf.reduce_sum(
+#                 tf.keras.layers.ReLU()
+#                     (tf.matmul(x[:,j*nItem:j*nItem+nItem,i],tf.transpose(x[:,i*nItem:i*nItem+nItem,j],[0,2,1]))/sqrt_head_size)
+#                 ,axis=1),axis=1)
+#                 for i in range(nSet)] for j in range(nSet)]
+#              )
+
+#         # devided by the two numbers of items of two sets（NOTE that nItem is SIMPLY fixed）
+#         scores = scores/nItem/nItem
+
+#         # linearly combine multi-head score maps
+#         # reshape (nSet, nSet, num_heads) to (1, nSet, nSet, num_heads)
+#         scores = tf.expand_dims(scores,0)
+#         scores = self.conv(scores)
+
+#         return scores[0,:,:,0]
+# #----------------------------
+
 #----------------------------
 # multi-head CS function to make cros-set matching score map
 class cross_set_score(tf.keras.layers.Layer):
@@ -119,29 +169,26 @@ class cross_set_score(tf.keras.layers.Layer):
         # one big linear function with weights of W_0, W_1, ..., W_num_heads outputs head_size*num_heads-dim vector
         #self.linear = tf.keras.layers.Dense(units=self.head_size*self.num_heads,kernel_constraint=tf.keras.constraints.NonNeg(),use_bias=False)
         self.linear = tf.keras.layers.Dense(units=self.head_size*self.num_heads,use_bias=False)
-
-        # linear function to combine multi-head score maps
-        self.conv = tf.keras.layers.Conv2D(filters=1, strides=(1,1), padding='same', kernel_size=(1,1),use_bias=False)
+        self.linear2 = tf.keras.layers.Dense(1,use_bias=False)
 
     def call(self, x):
-        nSet = tf.shape(x)[1]
+        nSet = tf.shape(x)[0]
         sqrt_head_size = tf.sqrt(tf.cast(self.head_size,tf.float32))
 
-        # linear transofrmation from (nSet*nItem, nSet, Xdim) to (nSet*nItem, nSet, head_size*num_heads)
+        # linear transofrmation from (nSet, nSet, nItem, Xdim) to (nSet, nSet, nItem, head_size*num_heads)
         x = self.linear(x)
 
         # reshape (nSet*nItem, nSet, head_size*num_heads) to (num_heads, nSet*nItem, nSet, head_size)
-        x = tf.transpose(tf.reshape(tf.expand_dims(x,2),[nSet*nItem, nSet, self.num_heads, self.head_size]),[2,0,1,3])        
+        x = tf.transpose(tf.reshape(x,[nSet, nSet, nItem, self.num_heads, self.head_size]),[0,1,3,2,4])        
 
         # compute inner products between all pairs of items with cross-set feature (cseft)
-        # Between set #1 and set #2, cseft x[:,0:2,1] and x[:,2:4,0] are extracted to compute inner product when nItem=2
-        # More generally, between set #i and set #j, cseft x[:,j*2:j*2+2,i] and x[:,i*2:i*2+2,j] are extracted.
+        # Between set #1 and set #2, cseft x[0,1] and x[1,0] are extracted to compute inner product when nItem=2
+        # More generally, between set #i and set #j, cseft x[i,j] and x[j,i] are extracted.
         # Outputing (nSet, nSet, num_heads)-score map
         scores = tf.stack(
             [[
                 tf.reduce_sum(tf.reduce_sum(
-                tf.keras.layers.ReLU()
-                    (tf.matmul(x[:,j*nItem:j*nItem+nItem,i],tf.transpose(x[:,i*nItem:i*nItem+nItem,j],[0,2,1]))/sqrt_head_size)
+                tf.keras.layers.ReLU()(tf.matmul(x[j,i],tf.transpose(x[i,j],[0,2,1]))/sqrt_head_size)
                 ,axis=1),axis=1)
                 for i in range(nSet)] for j in range(nSet)]
              )
@@ -149,19 +196,92 @@ class cross_set_score(tf.keras.layers.Layer):
         # devided by the two numbers of items of two sets（NOTE that nItem is SIMPLY fixed）
         scores = scores/nItem/nItem
 
-        # linearly combine multi-head score maps
-        # reshape (nSet, nSet, num_heads) to (1, nSet, nSet, num_heads)
-        scores = tf.expand_dims(scores,0)
-        scores = self.conv(scores)
+        # linearly combine multi-head score maps (nSet, nSet, num_heads) to (nSet, nSet)
+        scores = self.linear2(scores)[:,:,0]
 
-        return scores[0,:,:,0]
-#----------------------------        
+        return scores
+#----------------------------         
+
+# #----------------------------
+# # cross-set feature (cseft)
+# class cseft_bak(tf.keras.layers.Layer):
+#     def __init__(self, head_size=20, num_heads=2, activation="relu", self_attention=False):
+#         super(cseft_bak, self).__init__()
+#         self.head_size = head_size
+#         self.num_heads = num_heads        
+#         self.activation = activation
+#         self.self_attention = self_attention
+
+#         # multi-head linear function, l(x|W_0), l(x|W_1)...l(x|W_num_heads) for each item feature vector x.
+#         # one big linear function with weights of W_0, W_1, ..., W_num_heads outputs head_size*num_heads-dim vector
+#         self.linear1 = tf.keras.layers.Dense(units=self.head_size*self.num_heads, use_bias=False)
+#         self.linear2 = tf.keras.layers.Dense(units=self.head_size*self.num_heads, use_bias=False)
+#         self.linear3 = tf.keras.layers.Dense(units=self.head_size*self.num_heads, use_bias=False)
+
+#         # linear function to combine multi-head score maps
+#         self.conv = tf.keras.layers.Conv2D(filters=1, strides=(1,1), padding='same', kernel_size=(1,1),use_bias=False)
+
+#     def call(self, x, y):
+#         # number of sets
+#         nSet = tf.cast(tf.shape(x)[0]/nItem,tf.int32)
+#         sqrt_head_size = tf.sqrt(tf.cast(self.head_size,tf.float32))
+
+#         # linear transofrmation (nSet*nItem, head_size*num_heads)
+#         x = self.linear1(x)
+#         y1 = self.linear2(y)
+#         y2 = self.linear3(y)
+
+#         # reshape (nSet*nItem, head_size*num_heads) to (num_heads, nSet*nItem, head_size)
+#         x = tf.transpose(tf.reshape(x,[-1,self.num_heads,self.head_size]),[1,0,2])
+#         y1 = tf.transpose(tf.reshape(y1,[-1,self.num_heads,self.head_size]),[1,0,2])
+#         y2 = tf.transpose(tf.reshape(y2,[-1,self.num_heads,self.head_size]),[1,0,2])
+
+#         # inner products between all pairs of items, outputing (num_heads, nSet*nItem, nSet*nItem)-score map        
+#         xy1 = tf.matmul(x,tf.transpose(y1,[0,2,1]))/sqrt_head_size
+
+#         if self.activation=='softmax':
+#             # normalized by softmax
+#             xy1 = tf.nn.softmax(xy1,axis=-1)
+#         elif self.activation=='relu':
+#             # non-negative using Relu
+#             xy1 = tf.keras.layers.ReLU()(xy1)
+
+#         # block diagonal matrix containing the block (num_heads, nItem, head_size) of y2 in diagonal elements
+#         # outputs (num_heads, nSet*nItem, nSet*head_size)
+#         zeros = tf.zeros((self.num_heads, nItem, self.head_size))
+#         y2_block_diag = tf.concat([tf.concat([tf.tile(zeros,[1,1,i]),y2[:,i*nItem:(i+1)*nItem],tf.tile(zeros,[1,1,nSet-(i+1)])],axis=2) 
+#                         for i in range(nSet)],axis=1) 
+
+#         # computing weighted y2 by xy1, outputing (num_heads, nSet*nItem, nSet*head_size)
+#         newx = tf.matmul(xy1, y2_block_diag)
+#         newx = newx/nItem
+
+#         # linearly combine multi-head score maps
+#         # reshape (num_heads, nSet*nItem, nSet*head_size) to (1, nSet*nItem, nSet*head_size, num_heads)
+#         newx = tf.expand_dims(newx,-1)
+#         newx = tf.transpose(newx,[3,1,2,0])
+
+#         # combine heads, outputing (1, nSet*nItem, nSet*head_size, 1)
+#         newx = self.conv(newx)
+
+#         # reshape (1, nSet*nItem, nSet*head_size, 1) to (nSet*nItem, nSet*head_size)
+#         newx = newx[0,:,:,0]
+
+#         if self.self_attention:
+#             # extract only diagonal block (nItem, head_size), outputing (nSet*nItem, head_size)
+#             newx = tf.concat([newx[i*nItem:(i+1)*nItem,i*self.head_size:(i+1)*self.head_size] for i in range(nSet)],axis=0) 
+#         else:
+#             # reshape (nSet*nItem, nSet*head_size) to (nSet*nItem, nSet, head_size)
+#             newx = tf.reshape(tf.expand_dims(newx,1),[-1,nSet,self.head_size])
+
+#         return newx
+# #----------------------------        
 
 #----------------------------
 # cross-set feature (cseft)
-class cseft(tf.keras.layers.Layer):
+class set_transofrm(tf.keras.layers.Layer):
     def __init__(self, head_size=20, num_heads=2, activation="relu", self_attention=False):
-        super(cseft, self).__init__()
+        super(set_transofrm, self).__init__()
         self.head_size = head_size
         self.num_heads = num_heads        
         self.activation = activation
@@ -172,65 +292,55 @@ class cseft(tf.keras.layers.Layer):
         self.linear1 = tf.keras.layers.Dense(units=self.head_size*self.num_heads, use_bias=False)
         self.linear2 = tf.keras.layers.Dense(units=self.head_size*self.num_heads, use_bias=False)
         self.linear3 = tf.keras.layers.Dense(units=self.head_size*self.num_heads, use_bias=False)
-
-        # linear function to combine multi-head score maps
-        self.conv = tf.keras.layers.Conv2D(filters=1, strides=(1,1), padding='same', kernel_size=(1,1),use_bias=False)
+        self.linear4 = tf.keras.layers.Dense(units=self.head_size, use_bias=False)
 
     def call(self, x, y):
         # number of sets
-        nSet = tf.cast(tf.shape(x)[0]/nItem,tf.int32)
+        nSet = tf.shape(x)[0]
         sqrt_head_size = tf.sqrt(tf.cast(self.head_size,tf.float32))
 
-        # linear transofrmation (nSet*nItem, head_size*num_heads)
+        # reshape to (nSet, nItem, dim)
+        # linear transofrmation (nSet*nItem, nItem, head_size*num_heads)
         x = self.linear1(x)
         y1 = self.linear2(y)
         y2 = self.linear3(y)
 
-        # reshape (nSet*nItem, head_size*num_heads) to (num_heads, nSet*nItem, head_size)
-        x = tf.transpose(tf.reshape(x,[-1,self.num_heads,self.head_size]),[1,0,2])
-        y1 = tf.transpose(tf.reshape(y1,[-1,self.num_heads,self.head_size]),[1,0,2])
-        y2 = tf.transpose(tf.reshape(y2,[-1,self.num_heads,self.head_size]),[1,0,2])
+        # # reshape (nSet, nItem, head_size*num_heads) to (nSet, num_heads, nItem, head_size)
+        x = tf.transpose(tf.reshape(x,[nSet, nItem, self.num_heads, self.head_size]),[0,2,1,3])
+        y1 = tf.transpose(tf.reshape(y1,[nSet, nItem, self.num_heads, self.head_size]),[0,2,1,3])
+        y2 = tf.transpose(tf.reshape(y2,[nSet, nItem, self.num_heads, self.head_size]),[0,2,1,3])
 
-        # inner products between all pairs of items, outputing (num_heads, nSet*nItem, nSet*nItem)-score map        
-        xy1 = tf.matmul(x,tf.transpose(y1,[0,2,1]))/sqrt_head_size
+        # inner products between all pairs of items, outputing (nSet, num_heads, nSet*nItem, nSet*nItem)-score map        
+        xy1 = tf.matmul(x,tf.transpose(y1,[0,1,3,2]))/sqrt_head_size
 
         if self.activation=='softmax':
             # normalized by softmax
-            xy1 = tf.nn.softmax(xy1,axis=-1)
+            attention_weight = tf.nn.softmax(xy1,axis=-1)
         elif self.activation=='relu':
             # non-negative using Relu
-            xy1 = tf.keras.layers.ReLU()(xy1)
+            attention_weight = tf.keras.layers.ReLU()(xy1)
+            attention_weight = attention_weight/nItem
+        
+        if not self.self_attention:
+            # reshape (nSet, num_heads, nItem, head_size) to (nSet*nSet, num_heads, nItem, head_size)
+            attention_weight = tf.tile(attention_weight,[nSet,1,1,1])
+            y2 = tf.repeat(y2,nSet,axis=0)
+                    
+        # computing weighted y2, outputing (nSet, num_heads, nItem, head_size)
+        weighted_y2s = tf.matmul(attention_weight, y2)
 
-        # block diagonal matrix containing the block (num_heads, nItem, head_size) of y2 in diagonal elements
-        # outputs (num_heads, nSet*nItem, nSet*head_size)
-        zeros = tf.zeros((self.num_heads, nItem, self.head_size))
-        y2_block_diag = tf.concat([tf.concat([tf.tile(zeros,[1,1,i]),y2[:,i*nItem:(i+1)*nItem],tf.tile(zeros,[1,1,nSet-(i+1)])],axis=2) 
-                        for i in range(nSet)],axis=1) 
+        # reshape (nSet, num_heads, nItem, head_size) to (nSet, nItem, head_size*num_heads)
+        weighted_y2s = tf.reshape(tf.transpose(weighted_y2s,[0,2,1,3]),[-1, nItem, self.num_heads*self.head_size])
 
-        # computing weighted y2 by xy1, outputing (num_heads, nSet*nItem, nSet*head_size)
-        newx = tf.matmul(xy1, y2_block_diag)
-        newx = newx/nItem
+        # combine multi-head to (nSet, nItem, head_size)
+        output = self.linear4(weighted_y2s)
 
-        # linearly combine multi-head score maps
-        # reshape (num_heads, nSet*nItem, nSet*head_size) to (1, nSet*nItem, nSet*head_size, num_heads)
-        newx = tf.expand_dims(newx,-1)
-        newx = tf.transpose(newx,[3,1,2,0])
+        if not self.self_attention:
+            # reshape to (nSet, nSet, nItem, head_size)
+            output = tf.reshape(output, [nSet, nSet, nItem, self.head_size])
 
-        # combine heads, outputing (1, nSet*nItem, nSet*head_size, 1)
-        newx = self.conv(newx)
-
-        # reshape (1, nSet*nItem, nSet*head_size, 1) to (nSet*nItem, nSet*head_size)
-        newx = newx[0,:,:,0]
-
-        if self.self_attention:
-            # extract only diagonal block (nItem, head_size), outputing (nSet*nItem, head_size)
-            newx = tf.concat([newx[i*nItem:(i+1)*nItem,i*self.head_size:(i+1)*self.head_size] for i in range(nSet)],axis=0) 
-        else:
-            # reshape (nSet*nItem, nSet*head_size) to (nSet*nItem, nSet, head_size)
-            newx = tf.reshape(tf.expand_dims(newx,1),[-1,nSet,self.head_size])
-
-        return newx
-#----------------------------        
+        return output
+#----------------------------  
 
 #----------------------------
 # design network architecture
@@ -247,8 +357,8 @@ class myModel(tf.keras.Model):
         self.conv3 = tf.keras.layers.Conv2D(filters=baseChn*2, strides=(2,2), padding='same', kernel_size=(3,3), activation='relu')
         self.globalpool = tf.keras.layers.GlobalAveragePooling2D()
         self.cross_set_score = cross_set_score(head_size=baseChn*2, num_heads=num_heads)
-        self.self_attention = cseft(head_size=baseChn, num_heads=num_heads, activation="softmax", self_attention=True)
-        self.cseft = cseft(head_size=baseChn, num_heads=num_heads)
+        self.self_attention = set_transofrm(head_size=baseChn, num_heads=num_heads, activation="softmax", self_attention=True)
+        self.cseft = set_transofrm(head_size=baseChn, num_heads=num_heads)
         self.fc1 = tf.keras.layers.Dense(2, activation='softmax')
         self.fc2 = tf.keras.layers.Dense(baseChn, activation='softmax')
         self.fc3 = tf.keras.layers.Dense(2, activation='softmax')
@@ -271,14 +381,20 @@ class myModel(tf.keras.Model):
         # classificaiton of set
         output1 = self.fc1(tf.reshape(x,[nSet,-1]))
 
+        # reshape (nSet*nItem, D) to (nSet, nItem, D)
+        x = tf.reshape(x,[nSet, nItem, -1])
+
         # Attention
         if self.isSelfAttention:
+            # encoder (self-attention)
             # input: (nSet, nItem, D), output:(nSet, nItem, D)
             x = self.self_attention(x,x)
             debug.append(x)
 
         if self.isCseft:
             # decoder (cross-set transofrmation:cseft)
+            # input: (nSet, nItem, D)
+            # output:(nSet, nSet, nItem, D)
             x = self.cseft(x,x)
             debug.append(x)
         else:        
