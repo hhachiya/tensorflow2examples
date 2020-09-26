@@ -360,7 +360,7 @@ class myModel(tf.keras.Model):
         self.self_attention = set_transofrm(head_size=baseChn, num_heads=num_heads, activation="softmax", self_attention=True)
         self.cseft = set_transofrm(head_size=baseChn, num_heads=num_heads)
         self.fc1 = tf.keras.layers.Dense(2, activation='softmax')
-        self.fc2 = tf.keras.layers.Dense(baseChn, activation='softmax')
+        self.fc2 = tf.keras.layers.Dense(baseChn, activation='relu')
         self.fc3 = tf.keras.layers.Dense(2, activation='softmax')
 
     def call(self, x):
@@ -397,8 +397,8 @@ class myModel(tf.keras.Model):
             # output:(nSet, nSet, nItem, D)
             x = self.cseft(x,x)
             debug.append(x)
-        else:        
-            x = tf.tile(tf.expand_dims(x,1),[1,nSet,1]) 
+        else:
+            x = tf.tile(tf.expand_dims(x,1),[1,nSet,1,1]) 
 
         # cross set matching score
         score = self.cross_set_score(x)
